@@ -1,0 +1,17 @@
+# DevSecOps Security Sentinel Dependencies
+
+# Security Scanners
+checkov>=3.0.0
+
+# AI Integration
+google-generativeai>=0.3.0
+
+# GitHub Integration
+PyGithub>=2.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+tenacity>=8.2.0
+
+# Note: Trivy is installed separately via apt/brew/choco
+# See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/

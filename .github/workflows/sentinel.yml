@@ -1,0 +1,117 @@
+name: Security Sentinel
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+    inputs:
+      scanners:
+        description: 'Scanners to use (comma-separated: checkov,trivy)'
+        required: false
+        default: 'checkov,trivy'
+      min_severity:
+        description: 'Minimum severity to process (CRITICAL, HIGH, MEDIUM, LOW)'
+        required: false
+        default: 'LOW'
+      max_fixes:
+        description: 'Maximum number of fixes per run'
+        required: false
+        default: '10'
+      dry_run:
+        description: 'Dry run mode (no PRs created)'
+        required: false
+        default: 'false'
+        type: boolean
+      target_path:
+        description: 'Path to scan for vulnerabilities'
+        required: false
+        default: '.'
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  sentinel-scan:
+    name: Security Scan & Auto-Heal
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy -y
+          trivy --version
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Security Sentinel
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SENTINEL_SCANNERS: ${{ github.event.inputs.scanners || 'checkov,trivy' }}
+          SENTINEL_MIN_SEVERITY: ${{ github.event.inputs.min_severity || 'LOW' }}
+          SENTINEL_MAX_FIXES: ${{ github.event.inputs.max_fixes || '10' }}
+          SENTINEL_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          SENTINEL_TARGET_PATH: ${{ github.event.inputs.target_path || '.' }}
+          SENTINEL_BASE_BRANCH: ${{ github.event.pull_request.base.ref || 'main' }}
+        run: |
+          python healer.py
+
+      - name: Upload Scan Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-results
+          path: |
+            *.json
+            *.sarif
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Optional: Run Trivy separately for SARIF upload to GitHub Security tab
+  trivy-sarif:
+    name: Trivy SARIF Upload
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
