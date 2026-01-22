@@ -1,0 +1,309 @@
+"""Email notification integration for DevSecOps Sentinel."""
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from typing import Optional, List
+from dataclasses import dataclass
+
+
+@dataclass
+class EmailConfig:
+    """Email configuration."""
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    username: str = ""
+    password: str = ""
+    from_address: str = ""
+    use_tls: bool = True
+
+
+class EmailNotifier:
+    """
+    Email notification sender for security alerts.
+
+    Supports HTML formatted emails with severity-based styling.
+    """
+
+    SEVERITY_COLORS = {
+        "CRITICAL": "#FF0000",
+        "HIGH": "#FF8C00",
+        "MEDIUM": "#FFD700",
+        "LOW": "#32CD32",
+        "INFO": "#1E90FF",
+    }
+
+    def __init__(
+        self,
+        recipients: Optional[List[str]] = None,
+        config: Optional[EmailConfig] = None,
+        enabled: bool = True
+    ):
+        """
+        Initialize the email notifier.
+
+        Args:
+            recipients: List of email addresses to send to
+            config: Email configuration (defaults to env vars)
+            enabled: Whether notifications are enabled
+        """
+        self.recipients = recipients or os.getenv("SENTINEL_EMAIL_RECIPIENTS", "").split(",")
+        self.recipients = [r.strip() for r in self.recipients if r.strip()]
+
+        self.config = config or EmailConfig(
+            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+            smtp_port=int(os.getenv("SMTP_PORT", "587")),
+            username=os.getenv("SMTP_USERNAME", ""),
+            password=os.getenv("SMTP_PASSWORD", ""),
+            from_address=os.getenv("SMTP_FROM", ""),
+            use_tls=os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+        )
+
+        self.enabled = enabled and len(self.recipients) > 0 and self.config.username
+
+        if enabled and not self.enabled:
+            print("[Email] Warning: Email notifications not configured properly.")
+
+    def is_available(self) -> bool:
+        """Check if email notifications are available."""
+        return self.enabled
+
+    def send_vulnerability_alert(
+        self,
+        vulnerability: dict,
+        pr_url: Optional[str] = None,
+        status: str = "detected"
+    ) -> bool:
+        """
+        Send a vulnerability alert via email.
+
+        Args:
+            vulnerability: Vulnerability data dictionary
+            pr_url: URL of the created PR (if any)
+            status: Status of the vulnerability
+
+        Returns:
+            True if email sent successfully
+        """
+        if not self.is_available():
+            return False
+
+        severity = vulnerability.get("severity", "MEDIUM")
+        check_id = vulnerability.get("check_id", "Unknown")
+        check_name = vulnerability.get("check_name", "Security vulnerability detected")
+        file_path = vulnerability.get("file_path", "Unknown file")
+        cis_benchmark = vulnerability.get("cis_benchmark", "N/A")
+
+        color = self.SEVERITY_COLORS.get(severity, "#808080")
+
+        subject = f"[{severity}] Security Alert: {check_id}"
+
+        html_body = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background-color: {color}; color: white; padding: 15px; border-radius: 5px; }}
+        .content {{ padding: 20px; border: 1px solid #ddd; border-radius: 5px; margin-top: 10px; }}
+        .field {{ margin: 10px 0; }}
+        .label {{ font-weight: bold; color: #333; }}
+        .value {{ color: #666; }}
+        .pr-link {{ background-color: #0366d6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 15px; }}
+        .footer {{ margin-top: 20px; padding-top: 10px; border-top: 1px solid #ddd; color: #888; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Security Vulnerability {status.upper()}</h2>
+    </div>
+    <div class="content">
+        <div class="field">
+            <span class="label">Check ID:</span>
+            <span class="value">{check_id}</span>
+        </div>
+        <div class="field">
+            <span class="label">Severity:</span>
+            <span class="value" style="color: {color}; font-weight: bold;">{severity}</span>
+        </div>
+        <div class="field">
+            <span class="label">File:</span>
+            <span class="value"><code>{file_path}</code></span>
+        </div>
+        <div class="field">
+            <span class="label">CIS Benchmark:</span>
+            <span class="value">{cis_benchmark}</span>
+        </div>
+        <div class="field">
+            <span class="label">Description:</span>
+            <p class="value">{check_name}</p>
+        </div>
+        {f'<a href="{pr_url}" class="pr-link">View Pull Request</a>' if pr_url and pr_url != "DRY_RUN" else ''}
+    </div>
+    <div class="footer">
+        This alert was generated by DevSecOps Security Sentinel
+    </div>
+</body>
+</html>
+"""
+
+        return self._send_email(subject, html_body)
+
+    def send_summary(
+        self,
+        total_found: int,
+        total_fixed: int,
+        total_failed: int,
+        critical_count: int = 0,
+        high_count: int = 0,
+        details: Optional[List[dict]] = None
+    ) -> bool:
+        """
+        Send a summary email.
+
+        Args:
+            total_found: Total vulnerabilities found
+            total_fixed: Successfully fixed count
+            total_failed: Failed to fix count
+            critical_count: Critical severity count
+            high_count: High severity count
+            details: Optional list of vulnerability details
+
+        Returns:
+            True if email sent successfully
+        """
+        if not self.is_available():
+            return False
+
+        # Determine status
+        if total_failed > 0 or critical_count > 0:
+            status_color = "#FF0000"
+            status_text = "Attention Required"
+        elif total_fixed == total_found:
+            status_color = "#32CD32"
+            status_text = "All Clear"
+        else:
+            status_color = "#FFD700"
+            status_text = "Partial Success"
+
+        subject = f"Security Scan Summary: {status_text}"
+
+        # Build details table if provided
+        details_html = ""
+        if details:
+            rows = ""
+            for d in details[:20]:  # Limit to 20 items
+                sev_color = self.SEVERITY_COLORS.get(d.get("severity", "MEDIUM"), "#808080")
+                rows += f"""
+                <tr>
+                    <td>{d.get('check_id', 'N/A')}</td>
+                    <td style="color: {sev_color};">{d.get('severity', 'N/A')}</td>
+                    <td>{d.get('status', 'N/A')}</td>
+                    <td><code>{d.get('file_path', 'N/A')}</code></td>
+                </tr>
+                """
+            details_html = f"""
+            <h3>Details</h3>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+                <tr style="background-color: #f0f0f0;">
+                    <th>Check ID</th>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>File</th>
+                </tr>
+                {rows}
+            </table>
+            """
+
+        html_body = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background-color: {status_color}; color: white; padding: 15px; border-radius: 5px; }}
+        .stats {{ display: flex; gap: 20px; margin: 20px 0; }}
+        .stat-box {{ background-color: #f5f5f5; padding: 15px; border-radius: 5px; text-align: center; }}
+        .stat-value {{ font-size: 24px; font-weight: bold; }}
+        .stat-label {{ color: #666; }}
+        table {{ width: 100%; margin-top: 20px; }}
+        th, td {{ text-align: left; padding: 8px; }}
+        .footer {{ margin-top: 20px; padding-top: 10px; border-top: 1px solid #ddd; color: #888; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Security Scan Summary: {status_text}</h2>
+    </div>
+
+    <div class="stats">
+        <div class="stat-box">
+            <div class="stat-value">{total_found}</div>
+            <div class="stat-label">Total Found</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #32CD32;">{total_fixed}</div>
+            <div class="stat-label">Fixed</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #FF0000;">{total_failed}</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #FF0000;">{critical_count}</div>
+            <div class="stat-label">Critical</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #FF8C00;">{high_count}</div>
+            <div class="stat-label">High</div>
+        </div>
+    </div>
+
+    {details_html}
+
+    <div class="footer">
+        This summary was generated by DevSecOps Security Sentinel
+    </div>
+</body>
+</html>
+"""
+
+        return self._send_email(subject, html_body)
+
+    def _send_email(self, subject: str, html_body: str) -> bool:
+        """
+        Send an HTML email.
+
+        Args:
+            subject: Email subject
+            html_body: HTML content
+
+        Returns:
+            True if sent successfully
+        """
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = self.config.from_address or self.config.username
+            msg['To'] = ", ".join(self.recipients)
+
+            # Attach HTML content
+            html_part = MIMEText(html_body, 'html')
+            msg.attach(html_part)
+
+            # Send email
+            with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
+                if self.config.use_tls:
+                    server.starttls()
+                server.login(self.config.username, self.config.password)
+                server.sendmail(
+                    self.config.from_address or self.config.username,
+                    self.recipients,
+                    msg.as_string()
+                )
+
+            return True
+
+        except Exception as e:
+            print(f"[Email] Error sending email: {e}")
+            return False

@@ -3,15 +3,30 @@
 # Security Scanners
 checkov>=3.0.0
 
-# AI Integration
-google-generativeai>=0.3.0
+# AI Integration - Multi-Provider Support
+google-generativeai>=0.3.0   # Google Gemini
+openai>=1.0.0                # OpenAI GPT-4
+anthropic>=0.18.0            # Anthropic Claude
+ollama>=0.1.0                # Local Ollama models
 
 # GitHub Integration
 PyGithub>=2.1.0
 
+# CLI and Output
+rich>=13.0.0                 # Rich terminal output
+click>=8.0.0                 # CLI framework
+pyyaml>=6.0.0                # YAML configuration
+
 # Utilities
 python-dotenv>=1.0.0
-tenacity>=8.2.0
+tenacity>=8.2.0              # Retry logic with backoff
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Type Checking (optional)
+# mypy>=1.0.0
 
 # Note: Trivy is installed separately via apt/brew/choco
 # See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/
